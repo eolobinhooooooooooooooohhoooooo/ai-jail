@@ -1396,10 +1396,13 @@ impl TerminalFilter {
                     continue;
                 }
                 // Truncated sequence: the held lead is lone data and
-                // `b` stands on its own.
+                // `b` stands on its own. That includes another `c2`,
+                // which must be held again so `c2 c2 9b` cannot slip
+                // the encoded CSI past the filter as character data.
                 out.push(0xc2);
                 self.utf8_remaining = 0;
-            } else if matches!(self.state, FilterState::Ground) && b == 0xc2 {
+            }
+            if matches!(self.state, FilterState::Ground) && b == 0xc2 {
                 self.c1_lead = true;
                 self.utf8_remaining = 1;
                 continue;
@@ -2453,6 +2456,28 @@ mod tests {
         let mut filter = super::TerminalFilter::new();
         assert!(filter.feed(b"\xc2").is_empty());
         assert_eq!(filter.feed(b"x"), b"\xc2x");
+    }
+
+    #[test]
+    fn utf8_c1_after_lone_c2_lead_is_still_dropped() {
+        // A lone `c2` released by a second `c2` must not turn that second
+        // lead into character data, or the following `9b` would be
+        // forwarded as its continuation: `c2 9b` is U+009B CSI.
+        let mut filter = super::TerminalFilter::new();
+        assert_eq!(filter.feed(b"\xc2\xc2\x9b6n"), b"\xc26n");
+
+        let mut filter = super::TerminalFilter::new();
+        let mut out = filter.feed(b"\xc2");
+        out.extend(filter.feed(b"\xc2"));
+        out.extend(filter.feed(b"\x9b6n"));
+        assert_eq!(out, b"\xc26n");
+
+        // A run of lone leads releases each one, and a trailing
+        // legitimate character still passes intact.
+        let mut filter = super::TerminalFilter::new();
+        assert_eq!(filter.feed(b"\xc2\xc2\xc2\xa0"), b"\xc2\xc2\xc2\xa0");
+        let mut filter = super::TerminalFilter::new();
+        assert_eq!(filter.feed(b"\xc2\xc2\xc2\x9d"), b"\xc2\xc2");
     }
 
     /// Run child-output chunks through the real IO-loop rendering path.
